@@ -1,0 +1,20 @@
+{
+    "files.associations": {
+        "types.h": "c",
+        "cstring": "c",
+        "algorithm": "c",
+        "__bit_reference": "c",
+        "__hash_table": "c",
+        "__string": "c",
+        "fstream": "c",
+        "locale": "c",
+        "string": "c",
+        "vector": "c",
+        "atomic": "c",
+        "*.tcc": "c",
+        "sstream": "c",
+        "fs.h": "c",
+        "user.h": "c"
+    },
+    "C_Cpp.errorSquiggles": "disabled"
+}
