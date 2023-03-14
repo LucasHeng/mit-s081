@@ -1,0 +1,23 @@
+{
+    "files.associations": {
+        "defs.h": "c",
+        "proc.h": "c",
+        "memlayout.h": "c",
+        "riscv.h": "c",
+        "user.h": "c",
+        "param.h": "c",
+        "types.h": "c",
+        "bitset": "cpp",
+        "future": "cpp",
+        "ratio": "c",
+        "*.tcc": "c",
+        "cstdlib": "c",
+        "memory": "c",
+        "locale": "c",
+        "ostream": "c",
+        "new": "c",
+        "stat.h": "c",
+        "functional": "c",
+        "__locale": "c"
+    }
+}

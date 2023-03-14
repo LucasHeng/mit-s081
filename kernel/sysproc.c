@@ -69,12 +69,43 @@ sys_sleep(void)
   return 0;
 }
 
+void
+err(char *why)
+{
+  printf("pgtbltest: failed: %s\n", why);
+  exit(1);
+}
 
 #ifdef LAB_PGTBL
 int
 sys_pgaccess(void)
 {
   // lab pgtbl: your code here.
+  struct proc* p;
+  uint64 add;
+  int num;
+  uint64 retadd;
+  pte_t* pte;
+  int i;
+  unsigned int result = 0;
+
+  p = myproc();
+  argaddr(0,&add);
+  argint(1,&num);
+  argaddr(2,&retadd);
+
+  if(num > 32){
+    err("the number of pages is larger than 32");
+  }
+  for(i=0;i<num;i++){
+    add += i*PGSIZE;
+    pte = walk(p->pagetable,add,0);
+    if(((*pte)&PTE_A) !=0 ){
+      result |= (1<<i);
+      *pte = ((*pte)&~PTE_A); 
+    }
+  }
+  copyout(p->pagetable, retadd, (char *)(&result), sizeof(result));
   return 0;
 }
 #endif
