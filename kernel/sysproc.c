@@ -101,7 +101,11 @@ sys_pgaccess(void)
 
   for(i=0;i<num;i++){
     curradd = add + i*PGSIZE;
+    if(curradd >= MAXVA)
+      return -1;
     pte = walk(p->pagetable,curradd,0);
+    if(pte == 0 || (*pte & PTE_A) == 0)
+      continue;
     if(((*pte)&PTE_A) !=0 ){
       result |= (1<<i);
       *pte = ((*pte)&~PTE_A); 
