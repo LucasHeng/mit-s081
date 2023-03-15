@@ -83,6 +83,7 @@ sys_pgaccess(void)
   // lab pgtbl: your code here.
   struct proc* p;
   uint64 add;
+  uint64 curradd;
   int num;
   uint64 retadd;
   pte_t* pte;
@@ -97,9 +98,10 @@ sys_pgaccess(void)
   if(num > 32){
     err("the number of pages is larger than 32");
   }
+
   for(i=0;i<num;i++){
-    add += i*PGSIZE;
-    pte = walk(p->pagetable,add,0);
+    curradd = add + i*PGSIZE;
+    pte = walk(p->pagetable,curradd,0);
     if(((*pte)&PTE_A) !=0 ){
       result |= (1<<i);
       *pte = ((*pte)&~PTE_A); 
