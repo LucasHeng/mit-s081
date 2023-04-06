@@ -22,6 +22,8 @@ kvmmake(void)
   pagetable_t kpgtbl;
 
   kpgtbl = (pagetable_t) kalloc();
+  if(kpgtbl != 0)
+    printf("the page is 0\n");
   memset(kpgtbl, 0, PGSIZE);
 
   // uart registers
@@ -308,15 +310,27 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
-    pa = PTE2PA(*pte);
+    pa = PTE2PA(*pte);    
     flags = PTE_FLAGS(*pte);
+
+    if (flags & PTE_W)
+    {
+      flags = (flags | PTE_F) & ~PTE_W;
+      *pte = PA2PTE(pa) | flags;
+    }
+    if (mappages(new, i, PGSIZE, (uint64)pa, flags) != 0)
+    {
+      goto err;
+    }
+
+    /*
     if((mem = kalloc()) == 0)
       goto err;
     memmove(mem, (char*)pa, PGSIZE);
@@ -324,6 +338,8 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       kfree(mem);
       goto err;
     }
+    */
+    kaddrefcnt((void *)pa);
   }
   return 0;
 
@@ -356,6 +372,11 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
+
+    if (is_cow(pagetable, va0) == 1)
+    {
+      pa0 = (uint64)cowalloc(pagetable, va0);
+    }
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);

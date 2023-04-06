@@ -65,7 +65,16 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  }else if( r_scause() == 13 || r_scause() == 15)
+  {
+    uint64 addr = r_stval();
+    uint64 va = PGROUNDDOWN(addr);
+    if (va >= p->sz || is_cow(p->pagetable, va) == 0 || cowalloc(p->pagetable, va) == 0)
+    {
+      p->killed = 1;
+    }
+  }
+  else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
@@ -81,6 +90,18 @@ usertrap(void)
     yield();
 
   usertrapret();
+}
+
+uint64
+is_cow(pagetable_t pg_tb, uint64 va)
+{
+  if (va >= MAXVA) return 0;
+  pte_t* pte = walk(pg_tb, va, 0);
+  if (pte == 0) return 0;
+  if((*pte & PTE_V) == 0) return 0;
+  if((*pte & PTE_F) != 0) return 1;
+
+  return 0;
 }
 
 //

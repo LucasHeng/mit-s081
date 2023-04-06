@@ -23,10 +23,18 @@ struct {
   struct run *freelist;
 } kmem;
 
+struct ref_str
+{
+  struct spinlock lock;
+  int cnt[PHYSTOP / PGSIZE];
+} ref;
+
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&ref.lock, "ref");
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -36,7 +44,10 @@ freerange(void *pa_start, void *pa_end)
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+  {
+    ref.cnt[(uint64) p / PGSIZE] = 1;
     kfree(p);
+  }
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -51,15 +62,23 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
+  // 看是否需要release
+  acquire(&ref.lock);
+  if(--ref.cnt[(uint64)pa / PGSIZE]==0){
+    release(&ref.lock);
 
-  r = (struct run*)pa;
+    r = (struct run*)pa;
+    // Fill with junk to catch dangling refs.
+    memset(pa, 1, PGSIZE);
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+    acquire(&kmem.lock);
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+    release(&kmem.lock);
+  } else
+  {
+    release(&ref.lock);
+  }
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -73,10 +92,65 @@ kalloc(void)
   acquire(&kmem.lock);
   r = kmem.freelist;
   if(r)
+  {
     kmem.freelist = r->next;
+    acquire(&ref.lock);
+    ref.cnt[(uint64)r / PGSIZE] = 1;
+    release(&ref.lock);
+  }
   release(&kmem.lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+void* 
+cowalloc(pagetable_t pg_tb, uint64 va)
+{
+  char* mem;
+  pte_t* pte = walk(pg_tb, va, 0);
+  uint64 pa = PTE2PA(*pte);
+  if (pa == 0)
+    return 0;
+  uint64 flags;
+
+  if(ref.cnt[(uint64)pa / PGSIZE] == 1)
+  {
+    *pte |= PTE_W;
+    *pte &= ~PTE_F;
+    return (void*) pa;
+  } else
+  {
+    if ((mem = kalloc()) == 0)
+    {
+      return 0;
+    }
+    memmove(mem, (char*)pa, PGSIZE);
+    // 修改flags
+    *pte &= ~PTE_V;
+    // *pte = *pte & ~PTE_F;
+    // *pte = *pte | PTE_W;
+    flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_F;
+    if(mappages(pg_tb, va, PGSIZE, (uint64)mem, flags) != 0) {
+      kfree(mem);
+      *pte |= PTE_V;
+      return 0;
+    }
+
+    kfree((char*)PGROUNDDOWN(pa));
+    return mem;
+  }
+}
+
+int 
+kaddrefcnt(void* pa)
+{
+  if((uint64)pa % PGSIZE != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    return -1;
+
+  acquire(&ref.lock);
+  ++ref.cnt[(uint64)pa / PGSIZE];
+  release(&ref.lock);
+  return 0;
 }
