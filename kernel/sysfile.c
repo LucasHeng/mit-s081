@@ -304,11 +304,11 @@ create(char *path, short type, short major, short minor)
 uint64
 sys_open(void)
 {
-  char path[MAXPATH];
+  char path[MAXPATH], name[MAXPATH];
   int fd, omode;
   struct file *f;
   struct inode *ip;
-  int n;
+  int n, r;
 
   argint(1, &omode);
   if((n = argstr(0, path, MAXPATH)) < 0)
@@ -332,6 +332,33 @@ sys_open(void)
       iunlockput(ip);
       end_op();
       return -1;
+    }
+
+    int round = 0;
+    // 如果沒有nofollow，那么递归
+    while(ip->type == T_SYMLINK && ((omode & O_NOFOLLOW) != O_NOFOLLOW))
+    {
+      // 避免回环
+      if(++round > 10){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+
+      // read link file path
+      if((r = readi(ip, 0, (uint64)name, 0, MAXPATH)) <= 0){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      // 把前一个inode解锁
+      iunlockput(ip);
+      if((ip = namei(name)) == 0){
+        end_op();
+        return -1;
+      }
+
+      ilock(ip);
     }
   }
 
@@ -368,6 +395,41 @@ sys_open(void)
   end_op();
 
   return fd;
+}
+
+uint64
+sys_symlink(void)
+{
+  char new[MAXPATH], old[MAXPATH];
+  struct inode *dp;
+  int r;
+
+  if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+  // create symlink file
+  if((dp = create(new, T_SYMLINK, 0, 0)) == 0)
+    goto bad;
+  
+  // no need to lock again
+  // ilock(dp);
+
+  // write symlink into inode
+  if((r = writei(dp, 0, (uint64)old, 0, MAXPATH)) <= 0)
+  {
+    iunlockput(dp);
+    goto bad;
+  }
+  
+  iunlockput(dp);
+  end_op();
+    
+  return 0;
+
+bad:
+  end_op();
+  return -1;
 }
 
 uint64
