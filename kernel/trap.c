@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -15,6 +16,8 @@ extern char trampoline[], uservec[], userret[];
 void kernelvec();
 
 extern int devintr();
+extern int vmaalloc(uint64);
+extern struct vma *findvma(struct proc *, uint64);
 
 void
 trapinit(void)
@@ -67,10 +70,31 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if((r_scause() == 13 || r_scause() == 15)) {
+    uint64 va = r_stval();
+    struct vma *v = 0;
+    va = PGROUNDDOWN(va);
+    v = findvma(p, va);
+    if (!v)
+      goto bad;
+
+    // 看是什么fault
+    if (r_scause() == 15 && (v->prot & PROT_WRITE) && walkaddr(p->pagetable, va))
+    {
+      if (setdirty(p->pagetable, va))
+        goto bad;
+    }
+    else 
+    {
+      if (vmaalloc(va) == 0) {
+        goto bad;
+      }
+    }
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    setkilled(p);
+    bad:
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      setkilled(p);
   }
 
   if(killed(p))

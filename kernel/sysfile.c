@@ -15,6 +15,9 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
+
+#define min(a, b) ((a) < (b) ? (a) : (b))
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -503,3 +506,185 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  struct file *f;
+  uint64 addr;
+  int length, prot, flags, fd, offset;
+  struct proc *p;
+  struct vma *v = 0;
+  uint64 vend = MMAPEND;
+
+  argaddr(0, &addr);
+  argint(1, &length);
+  argint(2, &prot);
+  argint(3, &flags);
+  argint(5, &offset);
+
+  if(argfd(4, &fd, &f) < 0)
+    return -1;
+
+  if((!f->readable && (prot & (PROT_READ))) || (!f->writable && (prot & PROT_WRITE) && !(flags & MAP_PRIVATE)))
+    return -1;
+
+  length = PGROUNDUP(length); // 变大对齐
+  p = myproc();
+
+  for (int i = 0; i < NVMA; i++)
+  {
+    struct vma *vm = &p->vmas[i];
+    if(!vm->valid)
+    {
+      if(v==0)
+      {
+        v = vm;
+        v->valid = 1;
+      }
+    }
+    else if (vm->pstart < vend) {
+      vend = PGROUNDDOWN(vm->pstart);
+    }
+  }
+
+  if (v == 0)
+  {
+    panic("no free vma");
+  }
+
+  v->pstart = PGROUNDDOWN(vend - length);
+  v->len = length;
+  v->prot = prot;
+  v->flags = flags;
+  v->f = f;
+  v->offset = offset;
+
+  filedup(v->f);
+
+  return v->pstart;
+}
+
+struct vma *
+findvma(struct proc *p, uint64 va)
+{
+  int i;
+  for (i = 0;i < NVMA; i++)
+  {
+    struct vma *vv = &p->vmas[i];
+    if(vv->valid == 1 && va >= vv->pstart && va < vv->pstart + vv->len)
+    {
+      return vv;
+    }
+  }
+  return 0;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr, va;
+  int length, n, step;
+  struct proc *p = myproc();
+  struct vma *v = 0;
+  uint maxsz;
+
+  argaddr(0, &addr);
+  argint(1, &length);
+  if (addr % PGSIZE || length < 0)
+    return -1;
+
+  v = findvma(p, addr);
+  if (v == 0)
+    return -1;
+
+  if (length == 0)
+    return 0;
+  
+  if (v->flags & MAP_SHARED)
+  {
+    maxsz = ((MAXOPBLOCKS - 1 - 1 - 2) / 2) * BSIZE;
+    for (va = addr; va < addr + length; va += PGSIZE) 
+    {
+      if (isdirty(p->pagetable, va) == 0)
+        continue; // not dirty
+      
+      n = min(PGSIZE, addr + length - va);
+      for (int i = 0; i < n; i += step)
+      {
+        step = min(maxsz, n - i);
+        begin_op();
+        ilock(v->f->ip);
+        if (writei(v->f->ip, 1 ,va + i, va - v->pstart + v->offset + i, step) != step)
+        {
+          iunlock(v->f->ip);
+          end_op();
+          return -1;
+        }
+        iunlock(v->f->ip);
+        end_op();
+      }
+    }
+  }
+  uvmunmap(p->pagetable, addr, (length-1)/PGSIZE + 1, 1);
+  if (addr == v->pstart && length == v->len)
+  {
+    v->valid = 0;
+    v->pstart = 0;
+    v->offset = 0;
+    v->flags = 0;
+    v->prot = 0;
+    fileclose(v->f);
+    v->f = 0;
+  } 
+  else if (addr == v->pstart)
+  {
+    v->pstart += length;
+    v->offset += length;
+    v->len -= length;
+  }
+  else if(addr + length == v->pstart + v->len)
+  {
+    v->len -= length;
+  }
+  else 
+  {
+    panic("perhaps occure hole");
+  }
+  return 0;
+}
+
+int
+vmaalloc(uint64 va)
+{
+  struct proc *p = myproc();
+  struct vma *v = findvma(p, va);
+  if (v == 0)
+    return 0;
+
+  // after finding corresponding vma, alloc a new block
+  void *pa = kalloc();
+  if (pa == 0)
+    panic("no memory space for new block");
+  memset(pa, 0, PGSIZE);
+
+  begin_op();
+  ilock(v->f->ip);
+  readi(v->f->ip, 0, (uint64)pa, v->offset + va - v->pstart , PGSIZE);
+  iunlock(v->f->ip);
+  end_op();
+
+  int perm = PTE_U;
+  if (v->prot & PROT_READ)
+    perm |= PTE_R;
+  if (r_scause() == 15 && (v->prot & PROT_WRITE))
+    perm |= PTE_W | PTE_D;
+  if (v->prot & PROT_EXEC)
+    perm |= PTE_X;
+
+  if (mappages(p->pagetable, va, PGSIZE, (uint64)pa, perm) < 0)
+    panic("mappages wrong");
+
+  return 1;
+}
+

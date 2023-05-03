@@ -5,6 +5,12 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "fcntl.h"
+#include "sleeplock.h"
+#include "file.h"
+
+#define min(a, b) ((a) < (b) ? (a) : (b))
 
 struct cpu cpus[NCPU];
 
@@ -145,6 +151,11 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+
+  for (int i = 0; i < NVMA; i++)
+  {
+    p->vmas[i].valid = 0;
+  }
 
   return p;
 }
@@ -308,6 +319,15 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  for (i = 0; i < NVMA ; i++)
+  {
+    if (p->vmas[i].valid)
+    {
+      np->vmas[i] = p->vmas[i];
+      filedup(np->vmas[i].f);
+    }
+  }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -347,9 +367,52 @@ void
 exit(int status)
 {
   struct proc *p = myproc();
+  struct vma *v = 0;
+  int i, maxsz, n, step;
+  uint64 va;
 
   if(p == initproc)
     panic("init exiting");
+
+  for (i = 0; i < NVMA; i++)
+  {
+    if (!p->vmas[i].valid)
+      continue;
+    v = &p->vmas[i];
+    if (v->flags & MAP_SHARED)
+    {
+      maxsz = ((MAXOPBLOCKS - 1 - 1 - 2) / 2) * BSIZE;
+      for (va = v->pstart; va < v->pstart + v->len; va += PGSIZE) 
+      {
+        if (isdirty(p->pagetable, va) == 0)
+          continue; // not dirty
+      
+        n = min(PGSIZE, (int)(v->pstart + v->len - va));
+        for (int i = 0; i < n; i += step)
+        {
+          step = min(maxsz, n - i);
+          begin_op();
+          ilock(v->f->ip);
+          if (writei(v->f->ip, 1 ,va + i, va - v->pstart + v->offset + i, step) != step)
+          {
+            iunlock(v->f->ip);
+            end_op();
+            panic("exit: writei fail");
+          }
+          iunlock(v->f->ip);
+          end_op();
+        }
+      }
+    }
+    uvmunmap(p->pagetable, v->pstart, (v->len-1)/PGSIZE + 1, 1);
+    v->valid = 0;
+    v->pstart = 0;
+    v->offset = 0;
+    v->flags = 0;
+    v->prot = 0;
+    fileclose(v->f);
+    v->f = 0;
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
